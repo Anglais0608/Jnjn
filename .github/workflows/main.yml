@@ -8,7 +8,6 @@ on:
 jobs:
   emulate-and-connect:
     runs-on: ubuntu-latest
-    # Increase timeout if needed (default is 360 minutes / 6 hours for the job)
     # timeout-minutes: 60 
 
     steps:
@@ -25,14 +24,12 @@ jobs:
             echo "KVM acceleration can be used."
             echo "Adding user to kvm group..."
             sudo adduser $USER kvm
-            # Note: Group changes usually take effect in GH Actions runners without logout/login.
             echo "kvm_enabled=true" >> $GITHUB_OUTPUT
           else
             echo "WARNING: KVM acceleration not available or disabled. Emulation will be VERY slow."
             echo "kvm_enabled=false" >> $GITHUB_OUTPUT
           fi
           echo "KVM setup check complete."
-
 
       - name: Install Dependencies
         run: |
@@ -45,68 +42,84 @@ jobs:
             x11vnc \
             adb \
             tmate
-          # Clean up apt cache
           sudo rm -rf /var/lib/apt/lists/*
 
       - name: Set up Android SDK
         env:
           # --- Customize These ---
-          API_LEVEL: 31         # e.g., 30 (Android 11), 31 (Android 12), 33 (Android 13)
-          TARGET: google_apis   # google_apis includes Google Play services (use default for non-Google API image)
-          ARCH: x86_64          # x86_64 is usually fastest in emulation
+          API_LEVEL: 31
+          TARGET: google_apis
+          ARCH: x86_64
           AVD_NAME: test_avd
           # --- --- ----------- ---
-          CMDLINE_TOOLS_VERSION: "11076708" # Check for latest: https://developer.android.com/studio#command-tools
+          CMDLINE_TOOLS_VERSION: "11076708"
         run: |
-          echo "Setting up environment variables..."
-          echo "ANDROID_SDK_ROOT=${HOME}/android-sdk" >> $GITHUB_ENV
+          # Define SDK Root using a persistent location
+          SDK_ROOT="${HOME}/android-sdk"
+          echo "Setting ANDROID_SDK_ROOT to $SDK_ROOT"
+          echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> $GITHUB_ENV
           # Add SDK paths persistently for subsequent steps
-          echo "${HOME}/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "${HOME}/android-sdk/platform-tools" >> $GITHUB_PATH
-          echo "${HOME}/android-sdk/emulator" >> $GITHUB_PATH
+          echo "${SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "${SDK_ROOT}/platform-tools" >> $GITHUB_PATH
+          echo "${SDK_ROOT}/emulator" >> $GITHUB_PATH
           # Export for the current step
-          export ANDROID_SDK_ROOT="${HOME}/android-sdk"
+          export ANDROID_SDK_ROOT="${SDK_ROOT}"
           export PATH="$PATH:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/emulator"
+
+          # --- Explicitly Define ANDROID_AVD_HOME ---
+          AVD_HOME="${SDK_ROOT}/.android/avd" # Standard location within SDK root
+          echo "Setting ANDROID_AVD_HOME to $AVD_HOME"
+          echo "ANDROID_AVD_HOME=${AVD_HOME}" >> $GITHUB_ENV
+          export ANDROID_AVD_HOME="${AVD_HOME}" # Export for current step
+          mkdir -p "$AVD_HOME" # Ensure the directory exists
+          # --- End AVD Home Definition ---
 
           echo "Downloading Android Command-line tools..."
           CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS_VERSION}_latest.zip"
           mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
           wget -q "${CMDLINE_TOOLS_URL}" -O /tmp/cmdline-tools.zip
           unzip -q /tmp/cmdline-tools.zip -d "${ANDROID_SDK_ROOT}/cmdline-tools"
-          # The tools unzip into a 'cmdline-tools' dir, we want them in 'latest'
           mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
           rm /tmp/cmdline-tools.zip
 
           echo "Accepting licenses..."
-          yes | sdkmanager --licenses > /dev/null || true # Ignore errors from already accepted licenses
-          # Accept licenses again for packages that might not be installed yet
           yes | sdkmanager --licenses --sdk_root="$ANDROID_SDK_ROOT" > /dev/null || true
 
           echo "Installing SDK packages..."
-          sdkmanager "platform-tools" "emulator" "system-images;android-${API_LEVEL};${TARGET};${ARCH}"
+          sdkmanager "platform-tools" "emulator" "system-images;android-${API_LEVEL};${TARGET};${ARCH}" --sdk_root="$ANDROID_SDK_ROOT"
 
-          echo "Creating AVD..."
-          # Using a default device profile like pixel_5 might give better compatibility
-          echo "no" | avdmanager create avd -n "${AVD_NAME}" -k "system-images;android-${API_LEVEL};${TARGET};${ARCH}" --device "pixel_5" --force
+          echo "Creating AVD (Name: ${AVD_NAME}, Path: ${ANDROID_AVD_HOME})..."
+          # Specify --path to be absolutely sure where it goes
+          echo "no" | avdmanager create avd -n "${AVD_NAME}" -k "system-images;android-${API_LEVEL};${TARGET};${ARCH}" --device "pixel_5" --path "${ANDROID_AVD_HOME}" --force
 
-          echo "AVD details:"
+          # --- Verification ---
+          echo "Verifying AVD creation..."
           avdmanager list avd
+          echo "Contents of AVD directory ($ANDROID_AVD_HOME):"
+          ls -la "$ANDROID_AVD_HOME"
+          echo "Contents of ${AVD_NAME}.ini:"
+          cat "${ANDROID_AVD_HOME}/${AVD_NAME}.ini" || echo "INI file not found at expected location."
+          echo "--- Verification End ---"
 
       - name: Start Virtual Display (Xvfb)
         run: |
           echo "Starting Xvfb..."
           Xvfb :99 -screen 0 1280x800x24 &
           echo "DISPLAY=:99" >> $GITHUB_ENV
-          sleep 3 # Give Xvfb a moment to start
+          sleep 3
 
       - name: Start Android Emulator
+        # ANDROID_SDK_ROOT and ANDROID_AVD_HOME are inherited via $GITHUB_ENV
         env:
-          AVD_NAME: test_avd # Must match the name used in setup step
-          DISPLAY: :99       # Must match Xvfb display
+          AVD_NAME: test_avd # Make sure this matches the name used above
+          DISPLAY: :99
+          # Add QEMU_AUDIO_DRV=none if you encounter audio issues/warnings
+          # QEMU_AUDIO_DRV: none 
         run: |
-          echo "Starting emulator..."
-          # Use software rendering (swiftshader_indirect) for reliability in CI
-          # KVM accelerates CPU execution if enabled, but GPU rendering is software.
+          echo "Starting emulator for AVD: ${AVD_NAME}..."
+          echo "Using ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
+          echo "Using ANDROID_AVD_HOME: $ANDROID_AVD_HOME" # Verify it's set
+          
           emulator -avd "${AVD_NAME}" \
                    -no-snapshot \
                    -no-boot-anim \
@@ -114,44 +127,34 @@ jobs:
                    -gpu swiftshader_indirect &
 
           echo "Waiting for ADB device..."
-          adb wait-for-device shell exit # Wait until adb shell command can succeed
+          adb wait-for-device shell exit 
 
           echo "Waiting for emulator to fully boot..."
           adb shell 'while [[ -z $(getprop sys.boot_completed) ]]; do sleep 5; echo "Waiting for boot..."; done'
-          sleep 2 # Short wait after boot completed signal
-          adb shell input keyevent 82 # Unlock screen (KEYCODE_MENU) often works
+          sleep 2
+          adb shell input keyevent 82 # Unlock screen
 
           echo "Emulator is ready."
           adb devices
 
       - name: Setup VNC Server
         env:
-          DISPLAY: :99 # Must match Xvfb display
-          # VNC_PASSWORD: ghavnc # Password setup (optional if using -nopw)
+          DISPLAY: :99
         run: |
-          # echo "Setting up dummy VNC password file (needed by some x11vnc setups)..."
-          # mkdir -p ~/.vnc
-          # echo "password" | vncpasswd -f > ~/.vnc/passwd # Content doesn't matter if using -nopw
-          # chmod 600 ~/.vnc/passwd
-
           echo "Starting x11vnc server..."
           x11vnc -display $DISPLAY \
                  -forever \
                  -shared \
                  -nopw \
-                 -rfbport 5900 & # Standard VNC port, no password required
-          sleep 3 # Give VNC a moment to bind to the port
+                 -rfbport 5900 &
+          sleep 3
 
-      # --- CORRECTED STEP ---
-      # Removed the 'with:' block as no inputs are being passed
       - name: Provide Remote Access via tmate
         id: tmate
         uses: mxschmitt/action-tmate@v3
-        timeout-minutes: 350 # Keep session open (adjust as needed, max usually 360 total job time)
-        # No 'with:' block needed here if using defaults and not limiting access with SSH keys
+        timeout-minutes: 350 
 
       - name: Echo Connection Instructions After tmate Starts
-        # Only run this step if the tmate action successfully output connection details
         if: steps.tmate.outputs.tmateSSHCommand != ''
         run: |
           echo "----------------------------------------------------------------------"
@@ -159,30 +162,14 @@ jobs:
           echo ""
           echo "1. Connect to the runner via SSH using the tmate command below:"
           echo "   ${{ steps.tmate.outputs.tmateSSHCommand }}"
-          echo "   (Copy and paste the above line into your local terminal)"
           echo ""
-          echo "2. Once connected via SSH, the VNC server IS ALREADY RUNNING inside the runner."
-          echo "   You DO NOT need to start VNC manually in the SSH session."
+          echo "2. Once connected via SSH, the VNC server IS ALREADY RUNNING."
           echo ""
-          echo "3. On YOUR LOCAL machine (not in the SSH session), start a VNC client"
-          echo "   (e.g., RealVNC Viewer, TightVNC Viewer, TigerVNC, macOS Screen Sharing)."
+          echo "3. On YOUR LOCAL machine, start a VNC client."
           echo ""
-          echo "4. In your VNC client, connect to the address: localhost:5900"
-          echo "   (tmate automatically forwards port 5900 from the runner to your local machine)"
+          echo "4. In your VNC client, connect to: localhost:5900"
           echo ""
-          echo "5. No VNC password is required because '-nopw' was used."
+          echo "5. No VNC password is required."
           echo ""
-          echo "--- The Android Emulator UI should appear in your VNC client. ---"
-          echo "--- Session will remain active for approx ${{ steps.tmate.timeout-minutes }} minutes or until job timeout ---"
+          echo "--- Android Emulator UI should appear. Session timeout: approx ${{ job.timeout-minutes }} minutes ---"
           echo "----------------------------------------------------------------------"
-
-      # Optional Keepalive - uncomment if you face issues with premature job ending despite tmate
-      # - name: Keep Workflow Alive (if tmate running)
-      #   if: steps.tmate.outputs.tmateSSHCommand != ''
-      #   run: |
-      #     echo "Keeping workflow alive while tmate session is active (checking every 60s)..."
-      #     while (timeout 60s ss -lnp | grep -q ":${{ steps.tmate.outputs.tmateSshPort }} "); do # Check if tmate's SSH port is listening
-      #       echo "tmate session detected, sleeping..."
-      #       sleep 60
-      #     done
-      #     echo "tmate session appears to have ended."
