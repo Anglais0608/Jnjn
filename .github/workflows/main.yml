@@ -1,14 +1,19 @@
 # .github/workflows/android-emulator-vnc.yml
 name: Android Emulator with UI & Remote Access
 
-# Allows manual triggering from the GitHub Actions UI
 on:
   workflow_dispatch:
 
 jobs:
   emulate-and-connect:
     runs-on: ubuntu-latest
-    # timeout-minutes: 60 
+    # Define env vars at the job level to easily access API_LEVEL etc. later
+    env:
+      API_LEVEL: 31
+      TARGET: google_apis
+      ARCH: x86_64
+      AVD_NAME: test_avd
+      CMDLINE_TOOLS_VERSION: "11076708"
 
     steps:
       - name: Checkout code (optional)
@@ -22,11 +27,10 @@ jobs:
           sudo apt-get install -y cpu-checker qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils
           if sudo kvm-ok; then
             echo "KVM acceleration can be used."
-            echo "Adding user to kvm group..."
             sudo adduser $USER kvm
             echo "kvm_enabled=true" >> $GITHUB_OUTPUT
           else
-            echo "WARNING: KVM acceleration not available or disabled. Emulation will be VERY slow."
+            echo "WARNING: KVM acceleration not available. Emulation will be slow."
             echo "kvm_enabled=false" >> $GITHUB_OUTPUT
           fi
           echo "KVM setup check complete."
@@ -45,38 +49,33 @@ jobs:
           sudo rm -rf /var/lib/apt/lists/*
 
       - name: Set up Android SDK
-        env:
-          # --- Customize These ---
-          API_LEVEL: 31
-          TARGET: google_apis
-          ARCH: x86_64
-          AVD_NAME: test_avd
-          # --- --- ----------- ---
-          CMDLINE_TOOLS_VERSION: "11076708"
+        id: setup_sdk # Give this step an ID
         run: |
-          # Define SDK Root using a persistent location
+          # Define paths consistently
           SDK_ROOT="${HOME}/android-sdk"
-          echo "Setting ANDROID_SDK_ROOT to $SDK_ROOT"
+          AVD_HOME="${SDK_ROOT}/.android/avd"
+
+          echo "Setting ANDROID_SDK_ROOT=${SDK_ROOT}"
           echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> $GITHUB_ENV
-          # Add SDK paths persistently for subsequent steps
+          echo "Setting ANDROID_AVD_HOME=${AVD_HOME}"
+          echo "ANDROID_AVD_HOME=${AVD_HOME}" >> $GITHUB_ENV
+
+          # Also export them for the current step's commands
+          export ANDROID_SDK_ROOT="${SDK_ROOT}"
+          export ANDROID_AVD_HOME="${AVD_HOME}"
+          export PATH="$PATH:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/emulator"
+
+          # Set paths for future steps
           echo "${SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "${SDK_ROOT}/platform-tools" >> $GITHUB_PATH
           echo "${SDK_ROOT}/emulator" >> $GITHUB_PATH
-          # Export for the current step
-          export ANDROID_SDK_ROOT="${SDK_ROOT}"
-          export PATH="$PATH:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/emulator"
 
-          # --- Explicitly Define ANDROID_AVD_HOME ---
-          AVD_HOME="${SDK_ROOT}/.android/avd" # Standard location within SDK root
-          echo "Setting ANDROID_AVD_HOME to $AVD_HOME"
-          echo "ANDROID_AVD_HOME=${AVD_HOME}" >> $GITHUB_ENV
-          export ANDROID_AVD_HOME="${AVD_HOME}" # Export for current step
-          mkdir -p "$AVD_HOME" # Ensure the directory exists
-          # --- End AVD Home Definition ---
+          # Ensure directories exist
+          mkdir -p "$AVD_HOME"
+          mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
 
           echo "Downloading Android Command-line tools..."
-          CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS_VERSION}_latest.zip"
-          mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
+          CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-${{ env.CMDLINE_TOOLS_VERSION }}_latest.zip"
           wget -q "${CMDLINE_TOOLS_URL}" -O /tmp/cmdline-tools.zip
           unzip -q /tmp/cmdline-tools.zip -d "${ANDROID_SDK_ROOT}/cmdline-tools"
           mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
@@ -85,21 +84,22 @@ jobs:
           echo "Accepting licenses..."
           yes | sdkmanager --licenses --sdk_root="$ANDROID_SDK_ROOT" > /dev/null || true
 
-          echo "Installing SDK packages..."
-          sdkmanager "platform-tools" "emulator" "system-images;android-${API_LEVEL};${TARGET};${ARCH}" --sdk_root="$ANDROID_SDK_ROOT"
+          echo "Installing SDK packages (API:${{ env.API_LEVEL }}, Target:${{ env.TARGET }}, Arch:${{ env.ARCH }})..."
+          sdkmanager "platform-tools" "emulator" "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}" --sdk_root="$ANDROID_SDK_ROOT"
 
-          echo "Creating AVD (Name: ${AVD_NAME}, Path: ${ANDROID_AVD_HOME})..."
-          # Specify --path to be absolutely sure where it goes
-          echo "no" | avdmanager create avd -n "${AVD_NAME}" -k "system-images;android-${API_LEVEL};${TARGET};${ARCH}" --device "pixel_5" --path "${ANDROID_AVD_HOME}" --force
+          echo "Creating AVD (Name: ${{ env.AVD_NAME }}, Path: ${ANDROID_AVD_HOME})..."
+          echo "no" | avdmanager create avd -n "${{ env.AVD_NAME }}" -k "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}" --device "pixel_5" --path "${ANDROID_AVD_HOME}" --force
 
-          # --- Verification ---
           echo "Verifying AVD creation..."
           avdmanager list avd
           echo "Contents of AVD directory ($ANDROID_AVD_HOME):"
           ls -la "$ANDROID_AVD_HOME"
-          echo "Contents of ${AVD_NAME}.ini:"
-          cat "${ANDROID_AVD_HOME}/${AVD_NAME}.ini" || echo "INI file not found at expected location."
-          echo "--- Verification End ---"
+          echo "Contents of ${{ env.AVD_NAME }}.ini:"
+          cat "${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.ini" || echo "INI file not found."
+          echo "Verifying system image path:"
+          SYS_IMG_PATH="$ANDROID_SDK_ROOT/system-images/android-${{ env.API_LEVEL }}/${{ env.TARGET }}/${{ env.ARCH }}"
+          echo "Expected system image dir: $SYS_IMG_PATH"
+          ls -ld "$SYS_IMG_PATH" || echo "System image directory NOT FOUND at expected location."
 
       - name: Start Virtual Display (Xvfb)
         run: |
@@ -108,30 +108,51 @@ jobs:
           echo "DISPLAY=:99" >> $GITHUB_ENV
           sleep 3
 
+      # --- MODIFIED EMULATOR START STEP ---
       - name: Start Android Emulator
-        # ANDROID_SDK_ROOT and ANDROID_AVD_HOME are inherited via $GITHUB_ENV
         env:
-          AVD_NAME: test_avd # Make sure this matches the name used above
           DISPLAY: :99
-          # Add QEMU_AUDIO_DRV=none if you encounter audio issues/warnings
-          # QEMU_AUDIO_DRV: none 
+          # QEMU_AUDIO_DRV: none # Uncomment if needed
         run: |
-          echo "Starting emulator for AVD: ${AVD_NAME}..."
+          # Explicitly export environment variables needed by the emulator
+          # Use values set previously via GITHUB_ENV
+          export ANDROID_SDK_ROOT="${{ env.ANDROID_SDK_ROOT }}"
+          export ANDROID_AVD_HOME="${{ env.ANDROID_AVD_HOME }}"
+          export PATH="$PATH:$ANDROID_SDK_ROOT/emulator:$ANDROID_SDK_ROOT/platform-tools" # Ensure PATH is correct too
+
+          echo "--- Emulator Runtime Environment ---"
+          echo "Attempting to start emulator for AVD: ${{ env.AVD_NAME }}"
           echo "Using ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
-          echo "Using ANDROID_AVD_HOME: $ANDROID_AVD_HOME" # Verify it's set
-          
-          emulator -avd "${AVD_NAME}" \
+          echo "Using ANDROID_AVD_HOME: $ANDROID_AVD_HOME"
+          echo "Checking for relevant files:"
+          echo "AVD INI: ${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.ini"
+          ls -l "${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.ini" || echo "AVD INI not found"
+          echo "AVD Dir: ${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.avd"
+          ls -ld "${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.avd" || echo "AVD dir not found"
+          SYS_IMG_PATH="$ANDROID_SDK_ROOT/system-images/android-${{ env.API_LEVEL }}/${{ env.TARGET }}/${{ env.ARCH }}"
+          echo "Expected System Image Dir: $SYS_IMG_PATH"
+          ls -ld "$SYS_IMG_PATH" || echo "System image directory NOT FOUND"
+          echo "Emulator binary path:"
+          which emulator
+          echo "--- Starting Emulator ---"
+
+          # Start the emulator with logging, might show more detail if it still fails
+          emulator -avd "${{ env.AVD_NAME }}" \
+                   -verbose \
+                   -show-kernel \
                    -no-snapshot \
                    -no-boot-anim \
                    -no-audio \
                    -gpu swiftshader_indirect &
 
-          echo "Waiting for ADB device..."
-          adb wait-for-device shell exit 
+          # Wait for device with timeout
+          echo "Waiting for ADB device (timeout 180s)..."
+          timeout 180 adb wait-for-device shell exit || (echo "ADB device timed out!" && exit 1)
 
-          echo "Waiting for emulator to fully boot..."
-          adb shell 'while [[ -z $(getprop sys.boot_completed) ]]; do sleep 5; echo "Waiting for boot..."; done'
-          sleep 2
+          echo "Waiting for emulator boot completion (timeout 300s)..."
+          timeout 300 adb shell 'while [[ -z $(getprop sys.boot_completed) ]]; do sleep 5; echo "Waiting for boot..."; done' || (echo "Emulator boot timed out!" && exit 1)
+
+          sleep 5 # Extra grace period after boot
           adb shell input keyevent 82 # Unlock screen
 
           echo "Emulator is ready."
@@ -142,17 +163,13 @@ jobs:
           DISPLAY: :99
         run: |
           echo "Starting x11vnc server..."
-          x11vnc -display $DISPLAY \
-                 -forever \
-                 -shared \
-                 -nopw \
-                 -rfbport 5900 &
+          x11vnc -display $DISPLAY -forever -shared -nopw -rfbport 5900 &
           sleep 3
 
       - name: Provide Remote Access via tmate
         id: tmate
         uses: mxschmitt/action-tmate@v3
-        timeout-minutes: 350 
+        timeout-minutes: 350
 
       - name: Echo Connection Instructions After tmate Starts
         if: steps.tmate.outputs.tmateSSHCommand != ''
@@ -160,16 +177,9 @@ jobs:
           echo "----------------------------------------------------------------------"
           echo "--- Remote Session Instructions ---"
           echo ""
-          echo "1. Connect to the runner via SSH using the tmate command below:"
-          echo "   ${{ steps.tmate.outputs.tmateSSHCommand }}"
-          echo ""
-          echo "2. Once connected via SSH, the VNC server IS ALREADY RUNNING."
-          echo ""
-          echo "3. On YOUR LOCAL machine, start a VNC client."
-          echo ""
-          echo "4. In your VNC client, connect to: localhost:5900"
-          echo ""
-          echo "5. No VNC password is required."
+          echo "1. Connect via SSH: ${{ steps.tmate.outputs.tmateSSHCommand }}"
+          echo "2. Open VNC Client on your LOCAL machine."
+          echo "3. Connect VNC to: localhost:5900 (No password needed)"
           echo ""
           echo "--- Android Emulator UI should appear. Session timeout: approx ${{ job.timeout-minutes }} minutes ---"
           echo "----------------------------------------------------------------------"
