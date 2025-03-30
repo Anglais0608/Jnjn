@@ -7,13 +7,14 @@ on:
 jobs:
   emulate-and-connect:
     runs-on: ubuntu-latest
-    # Define env vars at the job level to easily access API_LEVEL etc. later
     env:
       API_LEVEL: 31
       TARGET: google_apis
       ARCH: x86_64
       AVD_NAME: test_avd
       CMDLINE_TOOLS_VERSION: "11076708"
+      # Define paths centrally
+      SDK_ROOT_PATH: "${HOME}/android-sdk" # Use a distinct name to avoid clashes
 
     steps:
       - name: Checkout code (optional)
@@ -49,20 +50,24 @@ jobs:
           sudo rm -rf /var/lib/apt/lists/*
 
       - name: Set up Android SDK
-        id: setup_sdk # Give this step an ID
+        id: setup_sdk
         run: |
-          # Define paths consistently
-          SDK_ROOT="${HOME}/android-sdk"
+          # Use the path defined in job env
+          SDK_ROOT="${{ env.SDK_ROOT_PATH }}"
           AVD_HOME="${SDK_ROOT}/.android/avd"
+          EMULATOR_HOME="${SDK_ROOT}/.android" # Often same parent as AVD_HOME or just $HOME/.android
 
           echo "Setting ANDROID_SDK_ROOT=${SDK_ROOT}"
           echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> $GITHUB_ENV
           echo "Setting ANDROID_AVD_HOME=${AVD_HOME}"
           echo "ANDROID_AVD_HOME=${AVD_HOME}" >> $GITHUB_ENV
+          echo "Setting ANDROID_EMULATOR_HOME=${EMULATOR_HOME}" # Add this
+          echo "ANDROID_EMULATOR_HOME=${EMULATOR_HOME}" >> $GITHUB_ENV # Add this
 
-          # Also export them for the current step's commands
+          # Export for current step
           export ANDROID_SDK_ROOT="${SDK_ROOT}"
           export ANDROID_AVD_HOME="${AVD_HOME}"
+          export ANDROID_EMULATOR_HOME="${EMULATOR_HOME}" # Add this
           export PATH="$PATH:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/emulator"
 
           # Set paths for future steps
@@ -72,6 +77,7 @@ jobs:
 
           # Ensure directories exist
           mkdir -p "$AVD_HOME"
+          mkdir -p "$EMULATOR_HOME" # Add this
           mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
 
           echo "Downloading Android Command-line tools..."
@@ -87,19 +93,26 @@ jobs:
           echo "Installing SDK packages (API:${{ env.API_LEVEL }}, Target:${{ env.TARGET }}, Arch:${{ env.ARCH }})..."
           sdkmanager "platform-tools" "emulator" "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}" --sdk_root="$ANDROID_SDK_ROOT"
 
-          echo "Creating AVD (Name: ${{ env.AVD_NAME }}, Path: ${ANDROID_AVD_HOME})..."
-          echo "no" | avdmanager create avd -n "${{ env.AVD_NAME }}" -k "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}" --device "pixel_5" --path "${ANDROID_AVD_HOME}" --force
+          # --- Verify Installation ---
+          echo "Verifying installed packages..."
+          sdkmanager --list_installed --sdk_root="$ANDROID_SDK_ROOT"
+          SYS_IMG_PATH="$ANDROID_SDK_ROOT/system-images/android-${{ env.API_LEVEL }}/${{ env.TARGET }}/${{ env.ARCH }}"
+          echo "Checking expected system image dir: $SYS_IMG_PATH"
+          ls -ld "$SYS_IMG_PATH" || echo "System image directory NOT FOUND at expected location."
 
+          echo "Creating AVD (Name: ${{ env.AVD_NAME }} in default location $ANDROID_AVD_HOME)..."
+          # Removed --path, let it use ANDROID_AVD_HOME. Added exit check.
+          echo "no" | avdmanager create avd -n "${{ env.AVD_NAME }}" -k "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}" --device "pixel_5" --force || exit 1
+
+          # --- Critical Verification ---
           echo "Verifying AVD creation..."
           avdmanager list avd
           echo "Contents of AVD directory ($ANDROID_AVD_HOME):"
           ls -la "$ANDROID_AVD_HOME"
-          echo "Contents of ${{ env.AVD_NAME }}.ini:"
-          cat "${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.ini" || echo "INI file not found."
-          echo "Verifying system image path:"
-          SYS_IMG_PATH="$ANDROID_SDK_ROOT/system-images/android-${{ env.API_LEVEL }}/${{ env.TARGET }}/${{ env.ARCH }}"
-          echo "Expected system image dir: $SYS_IMG_PATH"
-          ls -ld "$SYS_IMG_PATH" || echo "System image directory NOT FOUND at expected location."
+          echo "Checking for AVD INI file: ${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.ini"
+          ls -l "${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.ini" || echo "AVD INI file NOT found!"
+          echo "Checking for AVD Data directory: ${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.avd"
+          ls -ld "${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.avd" || echo "AVD DATA DIRECTORY (.avd) NOT FOUND!"
 
       - name: Start Virtual Display (Xvfb)
         run: |
@@ -108,35 +121,25 @@ jobs:
           echo "DISPLAY=:99" >> $GITHUB_ENV
           sleep 3
 
-      # --- MODIFIED EMULATOR START STEP ---
       - name: Start Android Emulator
         env:
           DISPLAY: :99
-          # QEMU_AUDIO_DRV: none # Uncomment if needed
         run: |
-          # Explicitly export environment variables needed by the emulator
-          # Use values set previously via GITHUB_ENV
+          # Explicitly export environment variables
           export ANDROID_SDK_ROOT="${{ env.ANDROID_SDK_ROOT }}"
           export ANDROID_AVD_HOME="${{ env.ANDROID_AVD_HOME }}"
-          export PATH="$PATH:$ANDROID_SDK_ROOT/emulator:$ANDROID_SDK_ROOT/platform-tools" # Ensure PATH is correct too
+          export ANDROID_EMULATOR_HOME="${{ env.ANDROID_EMULATOR_HOME }}" # Add this export
+          export PATH="$PATH:$ANDROID_SDK_ROOT/emulator:$ANDROID_SDK_ROOT/platform-tools"
 
           echo "--- Emulator Runtime Environment ---"
           echo "Attempting to start emulator for AVD: ${{ env.AVD_NAME }}"
           echo "Using ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
           echo "Using ANDROID_AVD_HOME: $ANDROID_AVD_HOME"
-          echo "Checking for relevant files:"
-          echo "AVD INI: ${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.ini"
-          ls -l "${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.ini" || echo "AVD INI not found"
-          echo "AVD Dir: ${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.avd"
-          ls -ld "${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.avd" || echo "AVD dir not found"
-          SYS_IMG_PATH="$ANDROID_SDK_ROOT/system-images/android-${{ env.API_LEVEL }}/${{ env.TARGET }}/${{ env.ARCH }}"
-          echo "Expected System Image Dir: $SYS_IMG_PATH"
-          ls -ld "$SYS_IMG_PATH" || echo "System image directory NOT FOUND"
-          echo "Emulator binary path:"
-          which emulator
+          echo "Using ANDROID_EMULATOR_HOME: $ANDROID_EMULATOR_HOME" # Log this
+          echo "Checking AVD Data directory: ${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.avd"
+          ls -ld "${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.avd" || (echo "AVD DATA DIRECTORY (.avd) still not found before launch!" && exit 1) # Fail if not found now
           echo "--- Starting Emulator ---"
 
-          # Start the emulator with logging, might show more detail if it still fails
           emulator -avd "${{ env.AVD_NAME }}" \
                    -verbose \
                    -show-kernel \
@@ -145,15 +148,14 @@ jobs:
                    -no-audio \
                    -gpu swiftshader_indirect &
 
-          # Wait for device with timeout
           echo "Waiting for ADB device (timeout 180s)..."
           timeout 180 adb wait-for-device shell exit || (echo "ADB device timed out!" && exit 1)
 
           echo "Waiting for emulator boot completion (timeout 300s)..."
           timeout 300 adb shell 'while [[ -z $(getprop sys.boot_completed) ]]; do sleep 5; echo "Waiting for boot..."; done' || (echo "Emulator boot timed out!" && exit 1)
 
-          sleep 5 # Extra grace period after boot
-          adb shell input keyevent 82 # Unlock screen
+          sleep 5
+          adb shell input keyevent 82
 
           echo "Emulator is ready."
           adb devices
