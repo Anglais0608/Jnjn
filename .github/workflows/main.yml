@@ -1,0 +1,36 @@
+name: Android Emulator Demo
+
+on: [push] # Déclenche le workflow à chaque push
+
+jobs:
+  test:
+    runs-on: macos-latest # Les émulateurs fonctionnent mieux sur macOS dans Actions
+
+    steps:
+    - name: Checkout du code
+      uses: actions/checkout@v4
+
+    - name: Configuration de Java (requis pour les outils Android)
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin' # Ou une autre distribution JDK
+        java-version: '17'    # Ou la version requise par votre projet
+
+    - name: Lancement de l'émulateur et exécution de tests (exemple)
+      uses: reactivecircus/android-emulator-runner@v2
+      with:
+        api-level: 30 # Niveau d'API Android souhaité
+        # target: default # google_apis, aosp_atd, google_atd, etc. (défaut: google_apis)
+        # arch: x86_64   # Architecture (défaut: x86_64)
+        # profile: Nexus 5 # Profil d'appareil (optionnel)
+        # Vous pouvez ajouter d'autres options ici (taille SD card, etc.)
+
+        # Script à exécuter une fois l'émulateur démarré et prêt
+        script: |
+          echo "Émulateur démarré !"
+          adb devices
+          echo "Ici, vous mettriez vos commandes de test, par exemple :"
+          # ./gradlew connectedCheck # Exécute les tests instrumentés
+          echo "Fin du script."
+
+    # L'émulateur est automatiquement arrêté à la fin de l'étape 'reactivecircus/android-emulator-runner'
