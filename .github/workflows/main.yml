@@ -13,8 +13,7 @@ jobs:
       ARCH: x86_64
       AVD_NAME: test_avd
       CMDLINE_TOOLS_VERSION: "11076708"
-      # Define paths centrally
-      SDK_ROOT_PATH: "${HOME}/android-sdk" # Use a distinct name to avoid clashes
+      SDK_ROOT_PATH: "${HOME}/android-sdk"
 
     steps:
       - name: Checkout code (optional)
@@ -52,32 +51,28 @@ jobs:
       - name: Set up Android SDK
         id: setup_sdk
         run: |
-          # Use the path defined in job env
           SDK_ROOT="${{ env.SDK_ROOT_PATH }}"
           AVD_HOME="${SDK_ROOT}/.android/avd"
-          EMULATOR_HOME="${SDK_ROOT}/.android" # Often same parent as AVD_HOME or just $HOME/.android
+          EMULATOR_HOME="${SDK_ROOT}/.android"
 
           echo "Setting ANDROID_SDK_ROOT=${SDK_ROOT}"
           echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> $GITHUB_ENV
           echo "Setting ANDROID_AVD_HOME=${AVD_HOME}"
           echo "ANDROID_AVD_HOME=${AVD_HOME}" >> $GITHUB_ENV
-          echo "Setting ANDROID_EMULATOR_HOME=${EMULATOR_HOME}" # Add this
-          echo "ANDROID_EMULATOR_HOME=${EMULATOR_HOME}" >> $GITHUB_ENV # Add this
+          echo "Setting ANDROID_EMULATOR_HOME=${EMULATOR_HOME}"
+          echo "ANDROID_EMULATOR_HOME=${EMULATOR_HOME}" >> $GITHUB_ENV
 
-          # Export for current step
           export ANDROID_SDK_ROOT="${SDK_ROOT}"
           export ANDROID_AVD_HOME="${AVD_HOME}"
-          export ANDROID_EMULATOR_HOME="${EMULATOR_HOME}" # Add this
+          export ANDROID_EMULATOR_HOME="${EMULATOR_HOME}"
           export PATH="$PATH:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/emulator"
 
-          # Set paths for future steps
           echo "${SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "${SDK_ROOT}/platform-tools" >> $GITHUB_PATH
           echo "${SDK_ROOT}/emulator" >> $GITHUB_PATH
 
-          # Ensure directories exist
           mkdir -p "$AVD_HOME"
-          mkdir -p "$EMULATOR_HOME" # Add this
+          mkdir -p "$EMULATOR_HOME"
           mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
 
           echo "Downloading Android Command-line tools..."
@@ -93,18 +88,15 @@ jobs:
           echo "Installing SDK packages (API:${{ env.API_LEVEL }}, Target:${{ env.TARGET }}, Arch:${{ env.ARCH }})..."
           sdkmanager "platform-tools" "emulator" "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}" --sdk_root="$ANDROID_SDK_ROOT"
 
-          # --- Verify Installation ---
           echo "Verifying installed packages..."
           sdkmanager --list_installed --sdk_root="$ANDROID_SDK_ROOT"
           SYS_IMG_PATH="$ANDROID_SDK_ROOT/system-images/android-${{ env.API_LEVEL }}/${{ env.TARGET }}/${{ env.ARCH }}"
           echo "Checking expected system image dir: $SYS_IMG_PATH"
           ls -ld "$SYS_IMG_PATH" || echo "System image directory NOT FOUND at expected location."
 
-          echo "Creating AVD (Name: ${{ env.AVD_NAME }} in default location $ANDROID_AVD_HOME)..."
-          # Removed --path, let it use ANDROID_AVD_HOME. Added exit check.
+          echo "Creating AVD (Name: ${{ env.AVD_NAME }} in $ANDROID_AVD_HOME)..."
           echo "no" | avdmanager create avd -n "${{ env.AVD_NAME }}" -k "system-images;android-${{ env.API_LEVEL }};${{ env.TARGET }};${{ env.ARCH }}" --device "pixel_5" --force || exit 1
 
-          # --- Critical Verification ---
           echo "Verifying AVD creation..."
           avdmanager list avd
           echo "Contents of AVD directory ($ANDROID_AVD_HOME):"
@@ -121,26 +113,29 @@ jobs:
           echo "DISPLAY=:99" >> $GITHUB_ENV
           sleep 3
 
+      # --- MODIFIED EMULATOR START STEP ---
       - name: Start Android Emulator
         env:
           DISPLAY: :99
         run: |
-          # Explicitly export environment variables
-          export ANDROID_SDK_ROOT="${{ env.ANDROID_SDK_ROOT }}"
+          # Environment variables should be inherited via GITHUB_ENV, but we also pass sdk-root explicitly
+          export ANDROID_SDK_ROOT="${{ env.ANDROID_SDK_ROOT }}" # Keep export just in case other tools need it
           export ANDROID_AVD_HOME="${{ env.ANDROID_AVD_HOME }}"
-          export ANDROID_EMULATOR_HOME="${{ env.ANDROID_EMULATOR_HOME }}" # Add this export
+          export ANDROID_EMULATOR_HOME="${{ env.ANDROID_EMULATOR_HOME }}"
           export PATH="$PATH:$ANDROID_SDK_ROOT/emulator:$ANDROID_SDK_ROOT/platform-tools"
 
           echo "--- Emulator Runtime Environment ---"
           echo "Attempting to start emulator for AVD: ${{ env.AVD_NAME }}"
-          echo "Using ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
-          echo "Using ANDROID_AVD_HOME: $ANDROID_AVD_HOME"
-          echo "Using ANDROID_EMULATOR_HOME: $ANDROID_EMULATOR_HOME" # Log this
+          echo "Using ANDROID_SDK_ROOT (env): $ANDROID_SDK_ROOT"
+          echo "Using ANDROID_AVD_HOME (env): $ANDROID_AVD_HOME"
+          echo "Using ANDROID_EMULATOR_HOME (env): $ANDROID_EMULATOR_HOME"
           echo "Checking AVD Data directory: ${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.avd"
-          ls -ld "${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.avd" || (echo "AVD DATA DIRECTORY (.avd) still not found before launch!" && exit 1) # Fail if not found now
-          echo "--- Starting Emulator ---"
+          ls -ld "${ANDROID_AVD_HOME}/${{ env.AVD_NAME }}.avd" || (echo "AVD DATA DIRECTORY (.avd) still not found before launch!" && exit 1)
+          echo "--- Starting Emulator (with -sdk-root) ---"
 
-          emulator -avd "${{ env.AVD_NAME }}" \
+          # Add -sdk-root flag
+          emulator -sdk-root "$ANDROID_SDK_ROOT" \
+                   -avd "${{ env.AVD_NAME }}" \
                    -verbose \
                    -show-kernel \
                    -no-snapshot \
